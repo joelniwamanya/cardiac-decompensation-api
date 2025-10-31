@@ -2,8 +2,127 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from fastapi import FastAPI
 app = FastAPI()
+
+# app.py (Add this section to the end of your file)
+
+import os
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from pydantic import BaseModel
+import logging
+
+# --- Configure logging ---
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# --- Configuration Constants ---
+# NOTE: Update these paths and parameters based on your deployment environment
+CHECKPOINT_PATH = os.environ.get("MODEL_PATH", "mcagnet_model.pth")
+NUM_FEATURES = 41 # MUST MATCH the features you extracted (e.g., from your previous code)
+NUM_CLASSES = 2
+HIDDEN_DIM = 64
+NUM_CHANNELS = 5 # AV, PV, TV, MV, Phc
+
+# --- 1. Define FastAPI Instance ---
+app = FastAPI(
+    title="MC-AGNet Cardiac Health API",
+    version="1.0",
+    description="API for cardiac audio analysis using a GNN model."
+)
+
+# --- 2. Load Model Once on Startup ---
+try:
+    # We map to 'cpu' as it's safer for general deployment unless using a GPU-enabled service
+    GLOBAL_MODEL = load_mcagnet_checkpoint(
+        ckpt_path=CHECKPOINT_PATH,
+        num_features=NUM_FEATURES,
+        num_classes=NUM_CLASSES,
+        hidden_dim=HIDDEN_DIM,
+        num_channels=NUM_CHANNELS,
+        map_location="cpu",
+    )
+    logger.info(f"✅ Model loaded successfully from {CHECKPOINT_PATH}")
+
+except Exception as e:
+    logger.error(f"FATAL ERROR: Could not load model checkpoint at {CHECKPOINT_PATH}. Details: {e}")
+    # You might want to let the app start but disable the endpoint, or crash early
+    # For now, we'll set it to None and handle the error in the endpoint.
+    GLOBAL_MODEL = None
+    raise HTTPException(status_code=500, detail=f"Model loading failed: {e}")
+
+
+# --- 3. Define Input Schema (Pydantic) ---
+# This schema must match the shape of the features the model expects.
+# Based on your previous data extraction: 
+# (batch_size, sequence_length, num_channels, num_features)
+class FeatureSequence(BaseModel):
+    # Assuming the input is a list of features, representing the sequence, channels, and features.
+    # The actual data will likely be passed as a list of lists of lists.
+    # Example: List[List[List[float]]]
+    data: list
+    # Add any other required context here, like patient_id, etc.
+    
+    # Example of how to define nested lists that match the tensor shape
+    # The structure must match your tensor: (seq_len, num_channels, num_features)
+    # The input data should be validated carefully in a real deployment
+    # For simplicity, we use a generic list here, but should be stricter.
+
+    class Config:
+        # Allows fields that are not defined in the schema (temporarily helpful)
+        extra = "allow" 
+
+# --- 4. Define Prediction Endpoint ---
+@app.post("/predict")
+async def predict_cardiac_condition(input_data: FeatureSequence):
+    """
+    Performs cardiac condition prediction using the loaded MC-AGNet model.
+    Input data must be a nested list representing the feature sequence.
+    """
+    if GLOBAL_MODEL is None:
+        raise HTTPException(status_code=503, detail="Model is not loaded or initialization failed.")
+
+    try:
+        # Convert input list to PyTorch tensor
+        # Expected shape: (seq_len, num_channels, num_features)
+        input_tensor_np = np.array(input_data.data, dtype=np.float32)
+        
+        # Add batch dimension: (1, seq_len, num_channels, num_features)
+        input_tensor = torch.tensor(input_tensor_np, dtype=torch.float32).unsqueeze(0)
+
+        # Ensure the model and tensor are on the same device
+        device = next(GLOBAL_MODEL.parameters()).device
+        input_tensor = input_tensor.to(device)
+
+        # Inference
+        with torch.no_grad():
+            output, _ = GLOBAL_MODEL(input_tensor)
+        
+        # Post-processing
+        probabilities = F.softmax(output, dim=1).squeeze().tolist()
+        predicted_class = torch.argmax(output, dim=1).item()
+        
+        # Map class index to label
+        labels = ["Normal", "Abnormal"]
+        predicted_label = labels[predicted_class]
+
+        return {
+            "prediction_label": predicted_label,
+            "prediction_class": predicted_class,
+            "probabilities": {labels[i]: prob for i, prob in enumerate(probabilities)}
+        }
+    
+    except Exception as e:
+        logger.error(f"Prediction failed: {e}")
+        # The exception might be due to incorrect input shape or types.
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Prediction failed due to processing error. Check input format. Error: {e}"
+        )
+
+@app.get("/")
+def read_root():
+    """Simple health check endpoint."""
+    return {"message": "MC-AGNet Cardiac API is running."}
 
 class GCNLayer(nn.Module):
     """Graph Convolutional Layer"""
