@@ -1,4 +1,3 @@
-# app.py
 import os
 from fastapi import FastAPI, File, UploadFile
 import torch
@@ -9,11 +8,12 @@ import torchaudio
 # ---------------------------
 app = FastAPI()
 
+# Always use a relative path (works locally and on Render)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, "mcagnet_model.pth")
 
-# Load model (always map to CPU on Render free tier)
-model = torch.jit.load(MODEL_PATH, map_location="cpu")
+# Load model
+model = torch.load(MODEL_PATH, map_location="cpu")
 model.eval()
 
 # ---------------------------
@@ -26,21 +26,21 @@ def home():
 @app.post("/predict/")
 async def predict(file: UploadFile = File(...)):
     """
-    Upload an audio file (wav, mp3).
+    Upload an audio file (.wav or .mp3).
     Returns: {"prediction": "Normal" or "Abnormal"}
     """
-    # Read and decode audio
     waveform, sr = torchaudio.load(file.file)
-    if waveform.ndim > 1:  # convert to mono
+
+    # Convert to mono if stereo
+    if waveform.ndim > 1:
         waveform = waveform.mean(dim=0, keepdim=True)
 
-    # Preprocess (match your training pipeline)
-    # Example normalization:
+    # Normalize (must match training pipeline)
     waveform = (waveform - waveform.mean()) / (waveform.std() + 1e-8)
 
     # Predict
     with torch.no_grad():
-        outputs = model(waveform.unsqueeze(0))  # Add batch dimension
+        outputs = model(waveform.unsqueeze(0))
         pred_idx = torch.argmax(outputs, dim=1).item()
 
     label = "Abnormal" if pred_idx == 1 else "Normal"
