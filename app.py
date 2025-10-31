@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # Config
 # ----------------------
 CHECKPOINT_PATH = os.environ.get("MODEL_PATH", "mcagnet_model.pth")
-NUM_FEATURES = int(os.environ.get("NUM_FEATURES", 41))  # ensure this matches your preprocessing
+NUM_FEATURES = int(os.environ.get("NUM_FEATURES", 4))  # ensure this matches your preprocessing
 NUM_CLASSES = int(os.environ.get("NUM_CLASSES", 2))
 HIDDEN_DIM = int(os.environ.get("HIDDEN_DIM", 64))
 NUM_CHANNELS = int(os.environ.get("NUM_CHANNELS", 5))
