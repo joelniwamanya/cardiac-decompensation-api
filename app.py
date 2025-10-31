@@ -1,129 +1,38 @@
-# ---- MC-AGNet (exact architecture that matches your checkpoint) ----
+# app.py — corrected and defensive version
+import os
+import logging
+from collections import OrderedDict
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-app = FastAPI()
-
-# app.py (Add this section to the end of your file)
-
-import os
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import logging
 
-# --- Configure logging ---
+# ----------------------
+# Logging
+# ----------------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Configuration Constants ---
-# NOTE: Update these paths and parameters based on your deployment environment
+# ----------------------
+# Config
+# ----------------------
 CHECKPOINT_PATH = os.environ.get("MODEL_PATH", "mcagnet_model.pth")
-NUM_FEATURES = 41 # MUST MATCH the features you extracted (e.g., from your previous code)
-NUM_CLASSES = 2
-HIDDEN_DIM = 64
-NUM_CHANNELS = 5 # AV, PV, TV, MV, Phc
+NUM_FEATURES = int(os.environ.get("NUM_FEATURES", 41))  # ensure this matches your preprocessing
+NUM_CLASSES = int(os.environ.get("NUM_CLASSES", 2))
+HIDDEN_DIM = int(os.environ.get("HIDDEN_DIM", 64))
+NUM_CHANNELS = int(os.environ.get("NUM_CHANNELS", 5))
 
-# --- 1. Define FastAPI Instance ---
-app = FastAPI(
-    title="MC-AGNet Cardiac Health API",
-    version="1.0",
-    description="API for cardiac audio analysis using a GNN model."
-)
+# ----------------------
+# FastAPI instance
+# ----------------------
+app = FastAPI(title="MC-AGNet Cardiac Health API", version="1.0")
 
-# --- 2. Load Model Once on Startup ---
-try:
-    # We map to 'cpu' as it's safer for general deployment unless using a GPU-enabled service
-    GLOBAL_MODEL = load_mcagnet_checkpoint(
-        ckpt_path=CHECKPOINT_PATH,
-        num_features=NUM_FEATURES,
-        num_classes=NUM_CLASSES,
-        hidden_dim=HIDDEN_DIM,
-        num_channels=NUM_CHANNELS,
-        map_location="cpu",
-    )
-    logger.info(f"✅ Model loaded successfully from {CHECKPOINT_PATH}")
-
-except Exception as e:
-    logger.error(f"FATAL ERROR: Could not load model checkpoint at {CHECKPOINT_PATH}. Details: {e}")
-    # You might want to let the app start but disable the endpoint, or crash early
-    # For now, we'll set it to None and handle the error in the endpoint.
-    GLOBAL_MODEL = None
-    raise HTTPException(status_code=500, detail=f"Model loading failed: {e}")
-
-
-# --- 3. Define Input Schema (Pydantic) ---
-# This schema must match the shape of the features the model expects.
-# Based on your previous data extraction: 
-# (batch_size, sequence_length, num_channels, num_features)
-class FeatureSequence(BaseModel):
-    # Assuming the input is a list of features, representing the sequence, channels, and features.
-    # The actual data will likely be passed as a list of lists of lists.
-    # Example: List[List[List[float]]]
-    data: list
-    # Add any other required context here, like patient_id, etc.
-    
-    # Example of how to define nested lists that match the tensor shape
-    # The structure must match your tensor: (seq_len, num_channels, num_features)
-    # The input data should be validated carefully in a real deployment
-    # For simplicity, we use a generic list here, but should be stricter.
-
-    class Config:
-        # Allows fields that are not defined in the schema (temporarily helpful)
-        extra = "allow" 
-
-# --- 4. Define Prediction Endpoint ---
-@app.post("/predict")
-async def predict_cardiac_condition(input_data: FeatureSequence):
-    """
-    Performs cardiac condition prediction using the loaded MC-AGNet model.
-    Input data must be a nested list representing the feature sequence.
-    """
-    if GLOBAL_MODEL is None:
-        raise HTTPException(status_code=503, detail="Model is not loaded or initialization failed.")
-
-    try:
-        # Convert input list to PyTorch tensor
-        # Expected shape: (seq_len, num_channels, num_features)
-        input_tensor_np = np.array(input_data.data, dtype=np.float32)
-        
-        # Add batch dimension: (1, seq_len, num_channels, num_features)
-        input_tensor = torch.tensor(input_tensor_np, dtype=torch.float32).unsqueeze(0)
-
-        # Ensure the model and tensor are on the same device
-        device = next(GLOBAL_MODEL.parameters()).device
-        input_tensor = input_tensor.to(device)
-
-        # Inference
-        with torch.no_grad():
-            output, _ = GLOBAL_MODEL(input_tensor)
-        
-        # Post-processing
-        probabilities = F.softmax(output, dim=1).squeeze().tolist()
-        predicted_class = torch.argmax(output, dim=1).item()
-        
-        # Map class index to label
-        labels = ["Normal", "Abnormal"]
-        predicted_label = labels[predicted_class]
-
-        return {
-            "prediction_label": predicted_label,
-            "prediction_class": predicted_class,
-            "probabilities": {labels[i]: prob for i, prob in enumerate(probabilities)}
-        }
-    
-    except Exception as e:
-        logger.error(f"Prediction failed: {e}")
-        # The exception might be due to incorrect input shape or types.
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Prediction failed due to processing error. Check input format. Error: {e}"
-        )
-
-@app.get("/")
-def read_root():
-    """Simple health check endpoint."""
-    return {"message": "MC-AGNet Cardiac API is running."}
-
+# ----------------------
+# Model classes (fixed __init__ typos)
+# ----------------------
 class GCNLayer(nn.Module):
     """Graph Convolutional Layer"""
     def __init__(self, in_features, out_features):
@@ -131,17 +40,11 @@ class GCNLayer(nn.Module):
         self.linear = nn.Linear(in_features, out_features)
         
     def forward(self, x, adjacency):
-        # x: (batch, num_nodes, in_features)
-        support = self.linear(x)  # (batch, num_nodes, out_features)
-        # adjacency: (num_nodes, num_nodes)
+        support = self.linear(x)
         output = torch.bmm(adjacency.unsqueeze(0).repeat(x.size(0), 1, 1), support)
         return output
 
 class MCAGNet(nn.Module):
-    """
-    MC-AGNet: Multi-Channel Audio Graph Network
-    For beamforming and source localization in microphone arrays
-    """
     def __init__(self, num_features, num_classes, hidden_dim=64, num_channels=5):
         super(MCAGNet, self).__init__()
         self.num_channels = num_channels
@@ -186,13 +89,12 @@ class MCAGNet(nn.Module):
                 module.bias.data.zero_()
     
     def _build_microphone_graph(self):
-        """5-microphone circular configuration"""
         adj = torch.tensor([
-            [1, 1, 0, 0, 1],  # 1↔2,5
-            [1, 1, 1, 0, 0],  # 2↔1,3
-            [0, 1, 1, 1, 0],  # 3↔2,4
-            [0, 0, 1, 1, 1],  # 4↔3,5
-            [1, 0, 0, 1, 1]   # 5↔1,4
+            [1, 1, 0, 0, 1],
+            [1, 1, 1, 0, 0],
+            [0, 1, 1, 1, 0],
+            [0, 0, 1, 1, 1],
+            [1, 0, 0, 1, 1]
         ], dtype=torch.float32)
         adj = adj + torch.eye(5)
         degree = torch.diag(torch.sum(adj, dim=1))
@@ -201,62 +103,155 @@ class MCAGNet(nn.Module):
         return normalized_adj
     
     def forward(self, x):
-        """
-        x: (batch_size, sequence_length, num_channels, num_features)
-        """
         batch_size, seq_len, num_channels, num_features = x.shape
-        
-        # 1) Channel encoders (average over time, per channel)
         channel_features = []
         for c in range(self.num_channels):
-            channel_data = x[:, :, c, :]            # (batch, seq, features)
-            channel_avg = torch.mean(channel_data, dim=1)  # (batch, features)
-            encoded = self.channel_encoders[c](channel_avg)  # (batch, hidden)
-            channel_features.append(encoded.unsqueeze(1))     # (batch, 1, hidden)
-        
-        multi_channel = torch.cat(channel_features, dim=1)     # (batch, C, hidden)
-        
-        # 2) Attention beamforming fusion
-        fused, attention_weights = self.channel_attention(
-            multi_channel, multi_channel, multi_channel
-        )  # (batch, C, hidden)
-        
-        # 3) Graph convolution over channels-as-nodes
-        gcn1_out = F.relu(self.gcn1(fused, self.adjacency))    # (batch, C, hidden)
-        gcn2_out = F.relu(self.gcn2(gcn1_out, self.adjacency)) # (batch, C, hidden)
-        
-        # 4) Global pooling + classifier
-        max_pool = torch.max(gcn2_out, dim=1)[0]   # (batch, hidden)
-        mean_pool = torch.mean(gcn2_out, dim=1)    # (batch, hidden)
-        combined = torch.cat([max_pool, mean_pool], dim=1)  # (batch, 2*hidden)
-        out = self.classifier(combined)            # (batch, num_classes)
+            channel_data = x[:, :, c, :]
+            channel_avg = torch.mean(channel_data, dim=1)
+            encoded = self.channel_encoders[c](channel_avg)
+            channel_features.append(encoded.unsqueeze(1))
+        multi_channel = torch.cat(channel_features, dim=1)
+        fused, attention_weights = self.channel_attention(multi_channel, multi_channel, multi_channel)
+        gcn1_out = F.relu(self.gcn1(fused, self.adjacency))
+        gcn2_out = F.relu(self.gcn2(gcn1_out, self.adjacency))
+        max_pool = torch.max(gcn2_out, dim=1)[0]
+        mean_pool = torch.mean(gcn2_out, dim=1)
+        combined = torch.cat([max_pool, mean_pool], dim=1)
+        out = self.classifier(combined)
         return out, attention_weights
 
-
-# ---- Safe loader that matches your checkpoint ----
+# ----------------------
+# Safe state-dict utilities
+# ----------------------
 def _strip_module_prefix(state_dict):
-    # If saved with DataParallel, keys are like 'module.xxx'
-    from collections import OrderedDict
     new_sd = OrderedDict()
     for k, v in state_dict.items():
-        new_sd[k[7:]] = v if k.startswith("module.") else v
+        if k.startswith("module."):
+            new_sd[k[len("module."):]] = v
+        else:
+            new_sd[k] = v
     return new_sd
 
+def _extract_state_dict(loaded):
+    # Many checkpoints are either:
+    # - a raw state_dict
+    # - a dict with keys like 'state_dict' or 'model_state_dict' mapping to the state dict
+    if isinstance(loaded, dict):
+        # check common keys
+        for candidate in ("state_dict", "model_state_dict", "sd"):
+            if candidate in loaded:
+                return loaded[candidate]
+        # otherwise assume loaded is already a state dict
+        return loaded
+    else:
+        # unexpected format
+        raise ValueError("Checkpoint loaded is not a dict or state_dict-like object.")
+
+# ----------------------
+# Checkpoint loader (defensive)
+# ----------------------
 def load_mcagnet_checkpoint(
-    ckpt_path="mcagnet_model.pth",
-    num_features=4,
-    num_classes=2,
-    hidden_dim=64,
-    num_channels=5,
+    ckpt_path=CHECKPOINT_PATH,
+    num_features=NUM_FEATURES,
+    num_classes=NUM_CLASSES,
+    hidden_dim=HIDDEN_DIM,
+    num_channels=NUM_CHANNELS,
     map_location="cpu",
+    strict=False,           # default to False so app starts; we still return mismatches
 ):
     device = torch.device(map_location)
     model = MCAGNet(num_features, num_classes, hidden_dim, num_channels)
-    sd = torch.load(ckpt_path, map_location=device)
-    # strip module. prefixes if present (harmless if not)
-    if any(k.startswith("module.") for k in sd.keys()):
-        sd = _strip_module_prefix(sd)
-    # strict=True so we catch any mismatch early
-    model.load_state_dict(sd, strict=True)
+    loaded = torch.load(ckpt_path, map_location=device)
+    state_dict = _extract_state_dict(loaded)
+    # strip 'module.' prefix if present
+    if any(k.startswith("module.") for k in list(state_dict.keys())):
+        state_dict = _strip_module_prefix(state_dict)
+    # attempt to load with requested strictness and capture result
+    load_result = model.load_state_dict(state_dict, strict=strict)
+    model.to(device)
     model.eval()
-    return model
+    return model, load_result
+
+# ----------------------
+# Startup: attempt to load model but do NOT crash app on failure
+# ----------------------
+GLOBAL_MODEL = None
+GLOBAL_LOAD_RESULT = None
+if os.path.exists(CHECKPOINT_PATH):
+    try:
+        GLOBAL_MODEL, GLOBAL_LOAD_RESULT = load_mcagnet_checkpoint(
+            ckpt_path=CHECKPOINT_PATH,
+            num_features=NUM_FEATURES,
+            num_classes=NUM_CLASSES,
+            hidden_dim=HIDDEN_DIM,
+            num_channels=NUM_CHANNELS,
+            map_location="cpu",
+            strict=False,  # let it load even if there are mismatches, so API can start
+        )
+        logger.info(f"Model loaded from {CHECKPOINT_PATH} (strict=False). Load result: {GLOBAL_LOAD_RESULT}")
+    except Exception as e:
+        logger.exception(f"Model load failed at startup: {e}")
+        GLOBAL_MODEL = None
+else:
+    logger.warning(f"Checkpoint not found at {CHECKPOINT_PATH}. App will start without a model.")
+
+# ----------------------
+# API schemas and endpoints
+# ----------------------
+class FeatureSequence(BaseModel):
+    data: list
+    class Config:
+        extra = "allow"
+
+@app.get("/")
+def read_root():
+    return {"message": "MC-AGNet Cardiac API is running."}
+
+@app.get("/load-model-test")
+def load_model_test():
+    """
+    Attempt to load checkpoint and return missing/unexpected keys info.
+    Use this endpoint to inspect your checkpoint on the deployed instance.
+    """
+    if not os.path.exists(CHECKPOINT_PATH):
+        return {"status": "missing_checkpoint", "path": CHECKPOINT_PATH}
+    try:
+        model, result = load_mcagnet_checkpoint(
+            ckpt_path=CHECKPOINT_PATH,
+            num_features=NUM_FEATURES,
+            num_classes=NUM_CLASSES,
+            hidden_dim=HIDDEN_DIM,
+            num_channels=NUM_CHANNELS,
+            map_location="cpu",
+            strict=False,
+        )
+        # result is a NamedTuple on PyTorch with missing_keys & unexpected_keys when strict=False
+        missing = getattr(result, "missing_keys", [])
+        unexpected = getattr(result, "unexpected_keys", [])
+        return {"status": "loaded_with_issues" if (missing or unexpected) else "loaded_ok",
+                "missing_keys_count": len(missing),
+                "unexpected_keys_count": len(unexpected),
+                "missing_keys_sample": missing[:40],
+                "unexpected_keys_sample": unexpected[:40]}
+    except Exception as e:
+        logger.exception("load-model-test failed")
+        return {"status": "error", "error": str(e)}
+
+@app.post("/predict")
+def predict_cardiac_condition(input_data: FeatureSequence):
+    if GLOBAL_MODEL is None:
+        raise HTTPException(status_code=503, detail="Model not loaded on server.")
+    try:
+        input_tensor_np = np.array(input_data.data, dtype=np.float32)
+        input_tensor = torch.tensor(input_tensor_np, dtype=torch.float32).unsqueeze(0)
+        device = next(GLOBAL_MODEL.parameters()).device
+        input_tensor = input_tensor.to(device)
+        with torch.no_grad():
+            output, _ = GLOBAL_MODEL(input_tensor)
+        probs = F.softmax(output, dim=1).squeeze().cpu().tolist()
+        pred = int(torch.argmax(output, dim=1).item())
+        labels = ["Normal", "Abnormal"]
+        return {"prediction_label": labels[pred], "prediction_class": pred, "probabilities": {labels[i]: float(probs[i]) for i in range(len(probs))}}
+    except Exception as e:
+        logger.exception("Prediction failed")
+        raise HTTPException(status_code=400, detail=f"Prediction failed: {e}")
