@@ -3,3 +3,4 @@ uvicorn
 torch
 torchaudio
 gunicorn
+numpy
